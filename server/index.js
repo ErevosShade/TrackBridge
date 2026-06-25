@@ -4,7 +4,7 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const { createClient } = require('redis');
-const {RedisStore} = require('connect-redis');
+const RedisStore = require('connect-redis').default;
 
 const authRouter = require('./routes/auth');
 const playlistRouter = require('./routes/playlist');
