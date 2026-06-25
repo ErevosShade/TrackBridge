@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://trackbridge-api.onrender.com/auth/:path*"
+    },
+    {
+      "source": "/auth/:path*",
+      "destination": "https://trackbridge-api.onrender.com/auth/:path*"
+    }
+  ]
+}
