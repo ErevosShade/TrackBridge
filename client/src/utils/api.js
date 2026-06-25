@@ -1,7 +1,8 @@
-const BASE = '/api';
+const API_BASE  = '/api';
+const AUTH_BASE = '/auth';
 
-async function request(path, opts = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+async function request(base, path, opts = {}) {
+  const res = await fetch(`${base}${path}`, {
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...opts.headers },
     ...opts,
@@ -11,21 +12,24 @@ async function request(path, opts = {}) {
   return data;
 }
 
+const api_  = (path, opts) => request(API_BASE,  path, opts);
+const auth_ = (path, opts) => request(AUTH_BASE, path, opts);
+
 export const api = {
-  // Auth
-  getAuthStatus: () => request('/auth/status', { credentials: 'include' }).catch(() => ({ spotify: false, youtube: false })),
-  logoutSpotify: () => fetch('/auth/spotify/logout', { credentials: 'include' }),
-  logoutYouTube: () => fetch('/auth/youtube/logout', { credentials: 'include' }),
+  // Auth → /auth/*  (NOT /api/auth/*)
+  getAuthStatus: () => auth_('/status').catch(() => ({ spotify: false, youtube: false })),
+  logoutSpotify: () => fetch(`${AUTH_BASE}/spotify/logout`, { credentials: 'include' }),
+  logoutYouTube: () => fetch(`${AUTH_BASE}/youtube/logout`, { credentials: 'include' }),
 
-  // Playlist
-  fetchPlaylist: (url) => request(`/playlist?url=${encodeURIComponent(url)}`),
+  // Playlist → /api/*
+  fetchPlaylist: (url) => api_(`/playlist?url=${encodeURIComponent(url)}`),
 
-  // Transfer
-  startTransfer: (body) => request('/transfer/start', { method: 'POST', body: JSON.stringify(body) }),
+  // Transfer → /api/*
+  startTransfer: (body) => api_('/transfer/start', { method: 'POST', body: JSON.stringify(body) }),
 
-  // Share
-  createShare: (body) => request('/share', { method: 'POST', body: JSON.stringify(body) }),
-  getShare: (token) => request(`/share/${token}`),
+  // Share → /api/*
+  createShare: (body) => api_('/share', { method: 'POST', body: JSON.stringify(body) }),
+  getShare: (token) => api_(`/share/${token}`),
 };
 
 /**
@@ -35,13 +39,13 @@ export const api = {
  * @returns {() => void} cleanup function
  */
 export function openTransferStream(jobId, { onEvent, onError, onComplete }) {
-  const es = new EventSource(`/api/transfer/stream/${jobId}`, { withCredentials: true });
+  const es = new EventSource(`${API_BASE}/transfer/stream/${jobId}`, { withCredentials: true });
 
   es.onmessage = (e) => {
     const event = JSON.parse(e.data);
     onEvent(event);
     if (event.type === 'complete') { onComplete(event); es.close(); }
-    if (event.type === 'error') { onError(new Error(event.error)); es.close(); }
+    if (event.type === 'error')    { onError(new Error(event.error)); es.close(); }
   };
 
   es.onerror = () => { onError(new Error('Stream disconnected')); es.close(); };
