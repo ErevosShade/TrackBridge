@@ -3,7 +3,6 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const session = require('express-session');
-const path = require('path');
 
 const authRouter = require('./routes/auth');
 const playlistRouter = require('./routes/playlist');
@@ -41,14 +40,6 @@ app.use('/api/share', shareRouter);
 
 // Health check
 app.get('/health', (_req, res) => res.json({ ok: true }));
-
-// ── Serve built client in production ─────────────────────────
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/dist')));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(__dirname, '../client/dist/index.html'));
-  });
-}
 
 app.listen(PORT, () => {
   console.log(`trackbridge server running on http://localhost:${PORT}`);

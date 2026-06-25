@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const { refreshSpotifyIfNeeded, refreshYouTubeIfNeeded } = require('../middleware/requireAuth');
+const quota = require('../utils/quotaGuard');
 const router = express.Router();
 
 // ── Detect platform from URL ──────────────────────────────────
@@ -75,6 +76,7 @@ async function fetchYouTubePlaylist(playlistId, accessToken) {
       params: { part: 'snippet', id: playlistId, maxResults: 1 },
     }
   );
+  quota.spend(quota.COSTS.playlistsList);
 
   const playlist = meta.items?.[0];
   if (!playlist) throw new Error('Playlist not found');
@@ -94,6 +96,7 @@ async function fetchYouTubePlaylist(playlistId, accessToken) {
       'https://www.googleapis.com/youtube/v3/playlistItems',
       { headers, params }
     );
+    quota.spend(quota.COSTS.playlistItemsList);
 
     for (const item of data.items) {
       const s = item.snippet;
