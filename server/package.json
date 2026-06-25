@@ -15,7 +15,8 @@
     "express-session": "^1.18.0",
     "nanoid": "^3.3.7",
     "querystring": "^0.2.1",
-    "connect-sqlite3": "^0.9.13"
+    "connect-redis": "^7.1.1",
+    "redis": "^4.6.13"
   },
   "devDependencies": {
     "nodemon": "^3.0.3"
