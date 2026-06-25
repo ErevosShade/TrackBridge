@@ -1,0 +1,55 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 32px;
+  border-bottom: 0.5px solid var(--b1);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 100;
+}
+
+.logo {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+.logo em { color: var(--ml); font-style: normal; }
+
+.ldot {
+  width: 7px;
+  height: 7px;
+  background: var(--moss);
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.chips { display: flex; gap: 8px; }
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 0.5px solid var(--b2);
+  background: var(--surface);
+  cursor: pointer;
+  transition: all 0.15s;
+  color: var(--mu);
+}
+.chip:hover { color: var(--tx); border-color: rgba(255,255,255,0.25); }
+.chip.connected { border-color: var(--moss); color: var(--ml); background: var(--md); }
+
+.cdot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}

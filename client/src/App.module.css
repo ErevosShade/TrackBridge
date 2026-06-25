@@ -1,0 +1,58 @@
+.wrap {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Hero ── */
+.hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 52px 24px 80px;
+}
+
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+  color: var(--mu);
+  margin-bottom: 18px;
+}
+
+.h1 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 38px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.2;
+  letter-spacing: -0.8px;
+  margin-bottom: 12px;
+  max-width: 540px;
+}
+.h1 em { font-style: normal; color: var(--ml); }
+
+.sub {
+  color: var(--mu);
+  text-align: center;
+  font-size: 14px;
+  margin-bottom: 52px;
+  max-width: 420px;
+  line-height: 1.6;
+}
+
+/* ── Card ── */
+.card {
+  width: 100%;
+  max-width: 620px;
+  background: var(--surface);
+  border: 0.5px solid var(--b2);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.divider {
+  border: none;
+  border-top: 0.5px solid var(--b1);
+}
