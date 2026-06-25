@@ -24,6 +24,10 @@ function extractYouTubeId(url) {
 
 // ── Spotify fetcher ───────────────────────────────────────────
 
+function getSpotifyTrackItem(entry) {
+  return entry.item?.track || entry.item || entry.track?.track || entry.track || null;
+}
+
 async function fetchSpotifyPlaylist(playlistId, accessToken) {
   const headers = {
     Authorization: `Bearer ${accessToken}`,
@@ -37,22 +41,20 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
       {
         headers,
         params: {
-          fields: "id,name,owner,images,tracks(total)",
+          fields: "id,name,owner.id,owner.display_name,images,tracks(total)",
         },
       }
     );
 
     meta = data;
   } catch (err) {
-    console.error("❌ Metadata request failed");
+    console.error("❌ Spotify playlist metadata request failed");
     console.error("Status:", err.response?.status);
     console.error("URL:", err.config?.url);
     console.error("Response:", err.response?.data);
     throw err;
   }
 
-  // Fetch all playlist tracks using Spotify's current /items endpoint.
-  // If /items is restricted, fall back to the older /tracks endpoint.
   const tracks = [];
   let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100`;
   let triedTracksEndpoint = false;
@@ -61,34 +63,34 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
     try {
       const { data } = await axios.get(url, { headers });
 
-      for (const entry of data.items) {
-        const item = entry.item || entry.track;
+      for (const entry of data.items || []) {
+        const item = getSpotifyTrackItem(entry);
         if (!item || item.type !== 'track') continue;
 
-        const t = item;
-
         tracks.push({
-          id: t.id,
-          name: t.name,
-          artist: t.artists.map((a) => a.name).join(", "),
-          album: t.album?.name || "",
-          duration_ms: t.duration_ms,
-          thumbnail: t.album?.images?.[2]?.url || null,
+          id: item.id,
+          name: item.name,
+          artist: item.artists.map((a) => a.name).join(", "),
+          album: item.album?.name || "",
+          duration_ms: item.duration_ms,
+          thumbnail: item.album?.images?.[2]?.url || null,
         });
       }
 
       url = data.next;
     } catch (err) {
-      if (!triedTracksEndpoint && [403, 404].includes(err.response?.status)) {
-        console.warn('⚠️ Spotify /items endpoint forbidden; retrying /tracks endpoint');
+      const status = err.response?.status;
+      const urlFailed = url;
+      if (!triedTracksEndpoint && status === 403) {
+        console.warn('⚠️ Spotify /items endpoint forbidden; retrying deprecated /tracks endpoint');
         url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`;
         triedTracksEndpoint = true;
         continue;
       }
 
-      console.error("❌ Tracks request failed");
-      console.error("Status:", err.response?.status);
-      console.error("URL:", url);
+      console.error("❌ Spotify playlist tracks request failed");
+      console.error("Status:", status);
+      console.error("URL:", urlFailed);
       console.error("Response:", err.response?.data);
       throw err;
     }
@@ -200,7 +202,9 @@ router.get('/', async (req, res) => {
     }
   } catch (err) {
     console.error('Playlist fetch error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to fetch playlist' });
+    const status = err.response?.status || 500;
+    const message = err.response?.data?.error?.message || err.response?.data?.message || 'Failed to fetch playlist';
+    res.status(status).json({ error: message, details: err.response?.data });
   }
 });
 
