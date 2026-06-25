@@ -51,18 +51,19 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
     throw err;
   }
 
-  // Fetch all playlist tracks
+  // Fetch all playlist tracks using Spotify's current /items endpoint.
   const tracks = [];
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`;
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100`;
 
   while (url) {
     try {
       const { data } = await axios.get(url, { headers });
 
       for (const entry of data.items) {
-        if (!entry.track) continue;
+        const item = entry.item || entry.track;
+        if (!item || item.type !== 'track') continue;
 
-        const t = entry.track;
+        const t = item;
 
         tracks.push({
           id: t.id,
@@ -87,9 +88,11 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
   return {
     id: meta.id,
     name: meta.name,
-    owner: meta.owner,
+    owner: meta.owner?.display_name || meta.owner?.id || 'Spotify',
+    thumbnail: meta.images?.[0]?.url || null,
     images: meta.images,
-    totalTracks: meta.tracks.total,
+    trackCount: meta.tracks.total,
+    sourcePlatform: 'spotify',
     tracks,
   };
 }
