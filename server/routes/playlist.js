@@ -32,7 +32,7 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
   // Fetch playlist metadata
   let meta;
   try {
-    const res = await axios.get(
+    const { data } = await axios.get(
       `https://api.spotify.com/v1/playlists/${playlistId}`,
       {
         headers,
@@ -42,7 +42,7 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
       }
     );
 
-    meta = res.data;
+    meta = data;
   } catch (err) {
     console.error("❌ Metadata request failed");
     console.error("Status:", err.response?.status);
@@ -51,18 +51,18 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
     throw err;
   }
 
-  // Fetch all playlist items
+  // Fetch all playlist tracks
   const tracks = [];
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100`;
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`;
 
   while (url) {
     try {
       const { data } = await axios.get(url, { headers });
 
       for (const entry of data.items) {
-        if (!entry.item) continue;
+        if (!entry.track) continue;
 
-        const t = entry.item;
+        const t = entry.track;
 
         tracks.push({
           id: t.id,
@@ -76,7 +76,7 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
 
       url = data.next;
     } catch (err) {
-      console.error("❌ Items request failed");
+      console.error("❌ Tracks request failed");
       console.error("Status:", err.response?.status);
       console.error("URL:", url);
       console.error("Response:", err.response?.data);
@@ -85,7 +85,11 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
   }
 
   return {
-    ...meta,
+    id: meta.id,
+    name: meta.name,
+    owner: meta.owner,
+    images: meta.images,
+    totalTracks: meta.tracks.total,
     tracks,
   };
 }
