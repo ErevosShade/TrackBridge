@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/privacy",
+      "destination": "/privacy.html"
+    },
+    {
       "source": "/api/:path*",
       "destination": "https://trackbridge-api.onrender.com/api/:path*"
     },
