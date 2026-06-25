@@ -25,42 +25,67 @@ function extractYouTubeId(url) {
 // ── Spotify fetcher ───────────────────────────────────────────
 
 async function fetchSpotifyPlaylist(playlistId, accessToken) {
-  const headers = { Authorization: `Bearer ${accessToken}` };
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+  };
 
-  const { data: meta } = await axios.get(
-    `https://api.spotify.com/v1/playlists/${playlistId}`,
-    { headers, params: { fields: 'id,name,owner,images,tracks(total)' } }
-  );
+  // Fetch playlist metadata
+  let meta;
+  try {
+    const res = await axios.get(
+      `https://api.spotify.com/v1/playlists/${playlistId}`,
+      {
+        headers,
+        params: {
+          fields: "id,name,owner,images,tracks(total)",
+        },
+      }
+    );
 
-  // Paginate all tracks (Spotify returns max 100 per page)
-  // NOTE: as of the Feb/Mar 2026 Spotify API migration, /tracks was renamed to /items
+    meta = res.data;
+  } catch (err) {
+    console.error("❌ Metadata request failed");
+    console.error("Status:", err.response?.status);
+    console.error("URL:", err.config?.url);
+    console.error("Response:", err.response?.data);
+    throw err;
+  }
+
+  // Fetch all playlist items
   const tracks = [];
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100&fields=next,items(item(id,name,artists,album,duration_ms))`;
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100`;
 
   while (url) {
-    const { data } = await axios.get(url, { headers });
-    for (const entry of data.items) {
-      if (!entry.item) continue;
-      const t = entry.item;
-      tracks.push({
-        id: t.id,
-        name: t.name,
-        artist: t.artists.map((a) => a.name).join(', '),
-        album: t.album?.name || '',
-        duration_ms: t.duration_ms,
-        thumbnail: t.album?.images?.[2]?.url || null,
-      });
+    try {
+      const { data } = await axios.get(url, { headers });
+
+      for (const entry of data.items) {
+        if (!entry.item) continue;
+
+        const t = entry.item;
+
+        tracks.push({
+          id: t.id,
+          name: t.name,
+          artist: t.artists.map((a) => a.name).join(", "),
+          album: t.album?.name || "",
+          duration_ms: t.duration_ms,
+          thumbnail: t.album?.images?.[2]?.url || null,
+        });
+      }
+
+      url = data.next;
+    } catch (err) {
+      console.error("❌ Items request failed");
+      console.error("Status:", err.response?.status);
+      console.error("URL:", url);
+      console.error("Response:", err.response?.data);
+      throw err;
     }
-    url = data.next;
   }
 
   return {
-    id: meta.id,
-    name: meta.name,
-    owner: meta.owner?.display_name || meta.owner?.id,
-    thumbnail: meta.images?.[0]?.url || null,
-    trackCount: tracks.length,
-    sourcePlatform: 'spotify',
+    ...meta,
     tracks,
   };
 }
