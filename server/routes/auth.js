@@ -25,19 +25,13 @@ router.get('/spotify', (req, res) => {
   const state = nanoid(16);
   req.session.oauthState = state;
 
-  console.log("====== SPOTIFY LOGIN ======");
-  console.log("Session ID:", req.sessionID);
-  console.log("Generated state:", state);
-  console.log("Session before save:", req.session);
-
-
   const params = new URLSearchParams({
     client_id: process.env.SPOTIFY_CLIENT_ID,
     response_type: 'code',
     redirect_uri: process.env.SPOTIFY_REDIRECT_URI,
     scope: SPOTIFY_SCOPES,
     state,
-    show_dialog: 'false',
+    show_dialog: 'true',
   });
 
   res.redirect(`${SPOTIFY_AUTH_URL}?${params}`);
@@ -45,11 +39,6 @@ router.get('/spotify', (req, res) => {
 
 router.get('/spotify/callback', async (req, res) => {
   const { code, state, error } = req.query;
-  console.log("====== SPOTIFY CALLBACK ======");
-  console.log("Session ID:", req.sessionID);
-  console.log("Returned state:", state);
-  console.log("Stored state:", req.session.oauthState);
-  console.log("Session:", req.session);
   const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 
   if (error || state !== req.session.oauthState) {
