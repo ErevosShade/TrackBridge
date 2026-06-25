@@ -8,6 +8,7 @@ node_modules/
 .env.production
 .env.staging
 server/.env
+client/.env
 **/.env
 
 # ── Build outputs ─────────────────────────────────────────────

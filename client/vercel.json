@@ -6,11 +6,12 @@
     },
     {
       "source": "/api/:path*",
-      "destination": "https://trackbridge-api.onrender.com/api/:path*"
+      "destination": "http://localhost:3001/api/:path*"
     },
     {
       "source": "/auth/:path*",
-      "destination": "https://trackbridge-api.onrender.com/auth/:path*"
+      "destination": "http://localhost:3001/auth/:path*"
     }
   ]
 }
+
