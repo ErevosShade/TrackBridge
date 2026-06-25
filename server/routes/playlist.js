@@ -52,8 +52,10 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
   }
 
   // Fetch all playlist tracks using Spotify's current /items endpoint.
+  // If /items is restricted, fall back to the older /tracks endpoint.
   const tracks = [];
   let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100`;
+  let triedTracksEndpoint = false;
 
   while (url) {
     try {
@@ -77,6 +79,13 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
 
       url = data.next;
     } catch (err) {
+      if (!triedTracksEndpoint && [403, 404].includes(err.response?.status)) {
+        console.warn('⚠️ Spotify /items endpoint forbidden; retrying /tracks endpoint');
+        url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`;
+        triedTracksEndpoint = true;
+        continue;
+      }
+
       console.error("❌ Tracks request failed");
       console.error("Status:", err.response?.status);
       console.error("URL:", url);
