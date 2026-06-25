@@ -26,9 +26,9 @@ export default function DestSection() {
           status={auth.spotify ? '● connected' : 'connect to use'}
         />
         <DestOption
-          id="ytmusic"
-          active={dest === 'ytmusic'}
-          onClick={() => setDest('ytmusic')}
+          id="youtube"
+          active={dest === 'youtube'}
+          onClick={() => setDest('youtube')}
           icon={<YouTubeIcon size={22} />}
           name="YouTube Music"
           status={auth.youtube ? '● connected' : 'connect to use'}

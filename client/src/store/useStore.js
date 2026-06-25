@@ -29,7 +29,7 @@ const useStore = create((set, get) => ({
   setFilterQuery: (q) => set({ filterQuery: q }),
 
   // ── Destination + options ────────────────────────────────────
-  dest: 'ytmusic',
+  dest: 'youtube',
   setDest: (dest) => set({ dest }),
   options: {
     exactMatchOnly: true,

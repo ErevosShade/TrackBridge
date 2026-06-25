@@ -1,5 +1,5 @@
 /**
- * @typedef {'spotify' | 'ytmusic'} Platform
+ * @typedef {'spotify' | 'youtube'} Platform
  *
  * @typedef {Object} Track
  * @property {string} id

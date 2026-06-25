@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const session = require('express-session');
+const SQLiteStore = require('connect-sqlite3')(session);
 
 const authRouter = require('./routes/auth');
 const playlistRouter = require('./routes/playlist');
@@ -13,6 +14,8 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
 
+app.set('trust proxy', 1);
+
 // ── Middleware ────────────────────────────────────────────────
 app.use(cors({
   origin: CLIENT_URL,
@@ -21,6 +24,7 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 app.use(session({
+  store: new SQLiteStore({ db: 'sessions.sqlite', dir: './data' }),
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
   resave: false,
   saveUninitialized: false,
