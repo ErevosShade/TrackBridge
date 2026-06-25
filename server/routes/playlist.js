@@ -33,14 +33,15 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
   );
 
   // Paginate all tracks (Spotify returns max 100 per page)
+  // NOTE: as of the Feb/Mar 2026 Spotify API migration, /tracks was renamed to /items
   const tracks = [];
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100&fields=next,items(track(id,name,artists,album,duration_ms))`;
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100&fields=next,items(item(id,name,artists,album,duration_ms))`;
 
   while (url) {
     const { data } = await axios.get(url, { headers });
-    for (const item of data.items) {
-      if (!item.track) continue;
-      const t = item.track;
+    for (const entry of data.items) {
+      if (!entry.item) continue;
+      const t = entry.item;
       tracks.push({
         id: t.id,
         name: t.name,
