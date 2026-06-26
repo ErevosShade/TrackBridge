@@ -36,6 +36,9 @@ export const api = {
   // Playlist → /api/*
   fetchPlaylist: (url) => api_(`/playlist?url=${encodeURIComponent(url)}`),
 
+  // Scan (pre-check matches, no writes) → /api/*
+  scanTracks: (body) => api_('/transfer/scan', { method: 'POST', body: JSON.stringify(body) }),
+
   // Transfer → /api/*
   startTransfer: (body) => api_('/transfer/start', { method: 'POST', body: JSON.stringify(body) }),
 
@@ -43,6 +46,27 @@ export const api = {
   createShare: (body) => api_('/share', { method: 'POST', body: JSON.stringify(body) }),
   getShare: (token) => api_(`/share/${token}`),
 };
+
+/**
+ * Opens an SSE stream for a scan job (search-only pre-check).
+ * @param {string} jobId
+ * @param {{ onEvent: Function, onError: Function, onComplete: Function }} handlers
+ * @returns {() => void} cleanup function
+ */
+export function openScanStream(jobId, { onEvent, onError, onComplete }) {
+  const es = new EventSource(`${API_BASE}/transfer/scan-stream/${jobId}`, { withCredentials: true });
+
+  es.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    onEvent(event);
+    if (event.type === 'scan_complete') { onComplete(event); es.close(); }
+    if (event.type === 'error')         { onError(new Error(event.error)); es.close(); }
+  };
+
+  es.onerror = () => { onError(new Error('Scan stream disconnected')); es.close(); };
+
+  return () => es.close();
+}
 
 /**
  * Opens an SSE stream for a transfer job.

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import useStore from '../store/useStore.js';
-import { api, openTransferStream } from '../utils/api.js';
+import { api, openTransferStream, openScanStream } from '../utils/api.js';
 import { SpotifyIcon, YouTubeIcon, ArrowsIcon, CheckIcon, SpinnerIcon, CopyIcon } from './Icons.jsx';
 import styles from './TransferSection.module.css';
 
@@ -10,15 +10,72 @@ export default function TransferSection() {
   const {
     playlist, selectedIds, dest, options, recipientEmail,
     transfer, setTransfer, resetTransfer, showToast,
+    scan, setScan, setTrackMatchStatus,
   } = useStore();
 
   const cleanupRef = useRef(null);
+  const scanCleanupRef = useRef(null);
 
-  useEffect(() => () => cleanupRef.current?.(), []);
+  useEffect(() => () => {
+    cleanupRef.current?.();
+    scanCleanupRef.current?.();
+  }, []);
 
   const selectedCount = selectedIds.size;
   const isRunning = transfer.status === 'running';
   const isDone = transfer.status === 'done';
+  const isScanning = scan.status === 'running';
+  const isScanned = scan.status === 'done';
+
+  async function startScan() {
+    if (!playlist || selectedCount === 0) {
+      showToast('Load a playlist and select tracks first');
+      return;
+    }
+
+    const selectedTracks = playlist.tracks.filter((t) => selectedIds.has(t.id));
+
+    setScan({ status: 'running', progress: 0, done: 0, total: selectedTracks.length, currentTrack: '' });
+    // Clear any previous match results so the dashboard reflects this scan only
+    selectedTracks.forEach((t) => setTrackMatchStatus(t.id, undefined));
+
+    try {
+      const { jobId } = await api.scanTracks({
+        from: playlist.sourcePlatform,
+        to: dest,
+        tracks: selectedTracks,
+        options,
+      });
+
+      scanCleanupRef.current = openScanStream(jobId, {
+        onEvent(event) {
+          if (event.type === 'track_scanned') {
+            setTrackMatchStatus(event.trackId, event.matchStatus);
+            setScan({
+              done: event.done,
+              total: event.total,
+              progress: Math.round((event.done / event.total) * 100),
+              currentTrack: event.trackName,
+            });
+          }
+          if (event.type === 'quota_stop') {
+            showToast(event.message);
+          }
+        },
+        onComplete(event) {
+          setScan({ status: 'done', progress: 100 });
+          showToast(`Scan complete — ${event.matched} matched, ${event.fuzzy} fuzzy, ${event.missed} not found`);
+        },
+        onError(err) {
+          setScan({ status: 'error' });
+          showToast(err.message || 'Scan failed');
+        },
+      });
+    } catch (err) {
+      setScan({ status: 'error' });
+      showToast(err.message || 'Failed to start scan');
+    }
+  }
 
   async function startTransfer() {
     if (!playlist || selectedCount === 0) {
@@ -133,7 +190,26 @@ export default function TransferSection() {
           </div>
         </div>
 
-        {/* Progress */}
+        {/* Scan progress */}
+        {scan.status !== 'idle' && (
+          <div className={styles.progWrap}>
+            <div className={styles.progBg}>
+              <div className={styles.progFill} style={{ width: `${scan.progress}%` }} />
+            </div>
+            <div className={styles.progMeta}>
+              <span className={styles.progTrack}>
+                {isScanned
+                  ? `✓ Scan complete — ${scan.done} of ${scan.total} checked`
+                  : scan.currentTrack
+                  ? `Checking: ${scan.currentTrack}…`
+                  : 'Starting scan…'}
+              </span>
+              <span>{scan.progress}%</span>
+            </div>
+          </div>
+        )}
+
+        {/* Transfer progress */}
         {transfer.status !== 'idle' && (
           <div className={styles.progWrap}>
             <div className={styles.progBg}>
@@ -156,9 +232,23 @@ export default function TransferSection() {
       {/* CTA */}
       <div className={styles.ctaSection}>
         <button
+          className={`${styles.tbtn} ${isScanning ? styles.running : ''}`}
+          onClick={startScan}
+          disabled={isScanning || isRunning || selectedCount === 0}
+        >
+          {isScanning ? <SpinnerIcon size={16} /> : isScanned ? <CheckIcon size={16} /> : <ArrowsIcon size={16} />}
+          {isScanning
+            ? 'Scanning…'
+            : isScanned
+            ? 'Scan complete ✓ — rescan'
+            : `Scan (${selectedCount})`}
+        </button>
+
+        <button
           className={`${styles.tbtn} ${isRunning ? styles.running : ''}`}
           onClick={startTransfer}
-          disabled={isRunning}
+          disabled={isRunning || !isScanned}
+          title={!isScanned ? 'Run a scan first to preview matches' : undefined}
         >
           {isRunning ? <SpinnerIcon size={16} /> : isDone ? <CheckIcon size={16} /> : <ArrowsIcon size={16} />}
           {btnLabel}

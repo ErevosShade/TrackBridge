@@ -159,6 +159,7 @@ router.get('/youtube/callback', async (req, res) => {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       expiresAt: Date.now() + data.expires_in * 1000,
+      grantedScope: data.scope || null, // DEBUG
     };
 
     res.redirect(`${CLIENT_URL}?auth_success=youtube`);
@@ -205,20 +206,5 @@ router.get('/status', (req, res) => {
   });
 });
 
-// ── TEMP DEBUG — remove after diagnosing 403 issue ──────────────
-router.get('/debug/spotify', (req, res) => {
-  res.json({
-    clientIdInUse: process.env.SPOTIFY_CLIENT_ID
-      ? process.env.SPOTIFY_CLIENT_ID.slice(0, 6) + '…' + process.env.SPOTIFY_CLIENT_ID.slice(-4)
-      : null,
-    redirectUriInUse: process.env.SPOTIFY_REDIRECT_URI || null,
-    hasSession: !!req.session.spotify,
-    grantedScope: req.session.spotify?.grantedScope || null,
-    expectedScope: SPOTIFY_SCOPES,
-    tokenExpiresAt: req.session.spotify?.expiresAt
-      ? new Date(req.session.spotify.expiresAt).toISOString()
-      : null,
-  });
-});
 
 module.exports = router;

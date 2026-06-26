@@ -8,7 +8,23 @@ const useStore = create((set, get) => ({
   // ── Playlist (source) ────────────────────────────────────────
   playlist: null,
   setPlaylist: (playlist) => set({ playlist }),
-  clearPlaylist: () => set({ playlist: null, selectedIds: new Set(), filterQuery: '' }),
+  clearPlaylist: () => set({ playlist: null, selectedIds: new Set(), filterQuery: '', scan: { status: 'idle', progress: 0 } }),
+
+  // ── Scan (pre-check matches before transferring) ─────────────
+  scan: { status: 'idle', progress: 0 }, // idle | running | done | error
+  setScan: (patch) => set((s) => ({ scan: { ...s.scan, ...patch } })),
+  setTrackMatchStatus: (trackId, matchStatus) =>
+    set((s) => {
+      if (!s.playlist) return {};
+      return {
+        playlist: {
+          ...s.playlist,
+          tracks: s.playlist.tracks.map((t) =>
+            t.id === trackId ? { ...t, matchStatus } : t
+          ),
+        },
+      };
+    }),
 
   // ── Track selection ──────────────────────────────────────────
   selectedIds: new Set(),

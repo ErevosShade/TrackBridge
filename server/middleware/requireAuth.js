@@ -28,7 +28,8 @@ async function refreshSpotifyIfNeeded(session) {
     session.spotify.expiresAt = Date.now() + data.expires_in * 1000;
     if (data.refresh_token) session.spotify.refreshToken = data.refresh_token;
     return true;
-  } catch {
+  } catch (err) {
+    console.error('❌ Spotify token refresh failed:', err.response?.data || err.message);
     return false;
   }
 }
@@ -51,7 +52,8 @@ async function refreshYouTubeIfNeeded(session) {
     session.youtube.accessToken = data.access_token;
     session.youtube.expiresAt = Date.now() + data.expires_in * 1000;
     return true;
-  } catch {
+  } catch (err) {
+    console.error('❌ YouTube token refresh failed:', err.response?.data || err.message);
     return false;
   }
 }
