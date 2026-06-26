@@ -33,6 +33,17 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
     Authorization: `Bearer ${accessToken}`,
   };
 
+  // Get the user's market — Spotify's docs note that without a market or
+  // user-country signal, playlist content can come back as unavailable.
+  let market;
+  try {
+    const { data: me } = await axios.get('https://api.spotify.com/v1/me', { headers });
+    market = me.country || undefined;
+    console.log('✅ Spotify user market:', market);
+  } catch (err) {
+    console.warn('⚠️ Could not fetch user market from /v1/me:', err.response?.data || err.message);
+  }
+
   // Fetch playlist metadata
   let meta;
   try {
@@ -42,6 +53,7 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
         headers,
         params: {
           fields: "id,name,owner.id,owner.display_name,images,tracks(total)",
+          ...(market ? { market } : {}),
         },
       }
     );
@@ -65,12 +77,14 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
   }
 
   const tracks = [];
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=50`;
+  const marketQS = market ? `&market=${encodeURIComponent(market)}` : '';
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=50${marketQS}`;
   let triedTracksEndpoint = false;
 
   while (url) {
     try {
       const { data } = await axios.get(url, { headers });
+      console.log(`✅ Spotify items page response (${url}):`, JSON.stringify(data).slice(0, 2000));
 
       for (const entry of data.items || []) {
         const item = getSpotifyTrackItem(entry);
@@ -92,7 +106,7 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
       const urlFailed = url;
       if (!triedTracksEndpoint && status === 403) {
         console.warn('⚠️ Spotify /items endpoint forbidden; retrying deprecated /tracks endpoint');
-        url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`;
+        url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50${marketQS}`;
         triedTracksEndpoint = true;
         continue;
       }
