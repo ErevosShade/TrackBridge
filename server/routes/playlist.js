@@ -52,11 +52,19 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
     console.error("Status:", err.response?.status);
     console.error("URL:", err.config?.url);
     console.error("Response:", err.response?.data);
-    throw err;
+
+    const status = err.response?.status;
+    const message = status === 403
+      ? '[metadata call] Spotify returned 403 Forbidden fetching playlist metadata (GET /v1/playlists/{id}). This usually means: the connected Spotify account is not added under "Users and Access" for this app in the Spotify Developer Dashboard, OR the access token is missing a required scope. Check /auth/debug/spotify for token + scope details.'
+      : err.response?.data?.error?.message || err.response?.data?.message || 'Failed to fetch Spotify playlist metadata';
+
+    const enriched = new Error(message);
+    enriched.response = err.response;
+    throw enriched;
   }
 
   const tracks = [];
-  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=100`;
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=50`;
   let triedTracksEndpoint = false;
 
   while (url) {
@@ -83,7 +91,7 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
       const urlFailed = url;
       if (!triedTracksEndpoint && status === 403) {
         console.warn('⚠️ Spotify /items endpoint forbidden; retrying deprecated /tracks endpoint');
-        url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=100`;
+        url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50`;
         triedTracksEndpoint = true;
         continue;
       }
@@ -92,7 +100,16 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
       console.error("Status:", status);
       console.error("URL:", urlFailed);
       console.error("Response:", err.response?.data);
-      throw err;
+
+      const message = status === 403
+        ? '[items call] Spotify returned 403 Forbidden. Common causes: (1) this Spotify account is not added under "Users and Access" for the app in the Spotify Developer Dashboard (Development Mode apps require every tester to be explicitly allowlisted), (2) the connected token is missing a required scope, or (3) the playlist is not owned by / shared with the connected account. Check /auth/debug/spotify for token + scope details.'
+        : status === 404
+        ? 'Spotify playlist not found.'
+        : err.response?.data?.error?.message || err.response?.data?.message || 'Failed to fetch Spotify playlist tracks';
+
+      const enriched = new Error(message);
+      enriched.response = err.response;
+      throw enriched;
     }
   }
 

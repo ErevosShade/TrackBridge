@@ -8,7 +8,19 @@ async function request(base, path, opts = {}) {
     ...opts,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Request failed');
+
+  if (!res.ok) {
+    let message = 'Request failed';
+    if (data?.error) {
+      message = typeof data.error === 'string'
+        ? data.error
+        : data.error.message || JSON.stringify(data.error);
+    } else if (data?.message) {
+      message = data.message;
+    }
+    throw new Error(message);
+  }
+
   return data;
 }
 
