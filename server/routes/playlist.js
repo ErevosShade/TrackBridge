@@ -25,7 +25,12 @@ function extractYouTubeId(url) {
 // ── Spotify fetcher ───────────────────────────────────────────
 
 function getSpotifyTrackItem(entry) {
-  return entry.item?.track || entry.item || entry.track?.track || entry.track || null;
+  // New /items endpoint shape: entry.item IS the track/episode object directly
+  // (entry.item.track is a boolean flag meaning "this is a track", not nested data).
+  // Deprecated /tracks endpoint shape: entry.track IS the track object.
+  if (entry.item && typeof entry.item === 'object') return entry.item;
+  if (entry.track && typeof entry.track === 'object') return entry.track;
+  return null;
 }
 
 async function fetchSpotifyPlaylist(playlistId, accessToken) {
