@@ -47,6 +47,7 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
     );
 
     meta = data;
+    console.log('✅ Spotify metadata response:', JSON.stringify(data));
   } catch (err) {
     console.error("❌ Spotify playlist metadata request failed");
     console.error("Status:", err.response?.status);
@@ -119,7 +120,7 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
     owner: meta.owner?.display_name || meta.owner?.id || 'Spotify',
     thumbnail: meta.images?.[0]?.url || null,
     images: meta.images,
-    trackCount: meta.tracks.total,
+    trackCount: meta.tracks?.total ?? tracks.length,
     sourcePlatform: 'spotify',
     tracks,
   };
@@ -130,14 +131,28 @@ async function fetchSpotifyPlaylist(playlistId, accessToken) {
 async function fetchYouTubePlaylist(playlistId, accessToken) {
   const headers = { Authorization: `Bearer ${accessToken}` };
 
-  const { data: meta } = await axios.get(
-    'https://www.googleapis.com/youtube/v3/playlists',
-    {
-      headers,
-      params: { part: 'snippet', id: playlistId, maxResults: 1 },
-    }
-  );
-  quota.spend(quota.COSTS.playlistsList);
+  let meta;
+  try {
+    const { data } = await axios.get(
+      'https://www.googleapis.com/youtube/v3/playlists',
+      {
+        headers,
+        params: { part: 'snippet', id: playlistId, maxResults: 1 },
+      }
+    );
+    meta = data;
+    quota.spend(quota.COSTS.playlistsList);
+  } catch (err) {
+    console.error('❌ YouTube playlist metadata request failed');
+    console.error('Status:', err.response?.status);
+    console.error('Response:', err.response?.data);
+    console.error('Stack:', err.stack);
+
+    const message = err.response?.data?.error?.message || 'Failed to fetch YouTube playlist metadata';
+    const enriched = new Error(message);
+    enriched.response = err.response;
+    throw enriched;
+  }
 
   const playlist = meta.items?.[0];
   if (!playlist) throw new Error('Playlist not found');
@@ -153,13 +168,27 @@ async function fetchYouTubePlaylist(playlistId, accessToken) {
       ...(pageToken ? { pageToken } : {}),
     };
 
-    const { data } = await axios.get(
-      'https://www.googleapis.com/youtube/v3/playlistItems',
-      { headers, params }
-    );
-    quota.spend(quota.COSTS.playlistItemsList);
+    let data;
+    try {
+      const res = await axios.get(
+        'https://www.googleapis.com/youtube/v3/playlistItems',
+        { headers, params }
+      );
+      data = res.data;
+      quota.spend(quota.COSTS.playlistItemsList);
+    } catch (err) {
+      console.error('❌ YouTube playlistItems request failed');
+      console.error('Status:', err.response?.status);
+      console.error('Response:', err.response?.data);
+      console.error('Stack:', err.stack);
 
-    for (const item of data.items) {
+      const message = err.response?.data?.error?.message || 'Failed to fetch YouTube playlist items';
+      const enriched = new Error(message);
+      enriched.response = err.response;
+      throw enriched;
+    }
+
+    for (const item of data.items || []) {
       const s = item.snippet;
       if (s.title === 'Deleted video' || s.title === 'Private video') continue;
       tracks.push({
@@ -218,9 +247,14 @@ router.get('/', async (req, res) => {
       return res.json(playlist);
     }
   } catch (err) {
-    console.error('Playlist fetch error:', err.response?.data || err.message);
+    console.error('❌ Playlist fetch error');
+    console.error('Message:', err.message);
+    console.error('Status:', err.response?.status);
+    console.error('Response data:', err.response?.data);
+    console.error('Stack:', err.stack);
+
     const status = err.response?.status || 500;
-    const message = err.response?.data?.error?.message || err.response?.data?.message || 'Failed to fetch playlist';
+    const message = err.response?.data?.error?.message || err.response?.data?.message || err.message || 'Failed to fetch playlist';
     res.status(status).json({ error: message, details: err.response?.data });
   }
 });

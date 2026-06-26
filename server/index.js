@@ -17,6 +17,14 @@ const CLIENT_URL = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/
 
 app.set('trust proxy', true);
 
+// ── Global safety net: log anything that would otherwise vanish ──
+process.on('unhandledRejection', (reason) => {
+  console.error('🔥 Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('🔥 Uncaught exception:', err.stack || err);
+});
+
 async function start() {
   const redisClient = createClient({ url: process.env.REDIS_URL });
   redisClient.on('error', (err) => console.error('Redis error:', err));
@@ -31,6 +39,16 @@ async function start() {
   }));
   app.use(express.json());
   app.use(cookieParser());
+
+  // ── Request logging ────────────────────────────────────────────
+  app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      console.log(`${req.method} ${req.originalUrl} → ${res.statusCode} (${Date.now() - start}ms)`);
+    });
+    next();
+  });
+
   app.use(session({
     store: sessionStore,
     secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
