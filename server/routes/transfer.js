@@ -120,16 +120,24 @@ async function createYouTubePlaylist(name, isPublic, accessToken) {
   if (!quota.canAfford(quota.COSTS.playlistsInsert)) {
     throw new Error('YouTube quota exhausted — cannot create playlist');
   }
-  const { data } = await axios.post(
-    'https://www.googleapis.com/youtube/v3/playlists?part=snippet,status',
-    {
-      snippet: { title: name, description: 'Transferred via trackbridge' },
-      status:  { privacyStatus: isPublic ? 'public' : 'private' },
-    },
-    { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
-  );
-  quota.spend(quota.COSTS.playlistsInsert);
-  return data.id;
+  try {
+    const { data } = await axios.post(
+      'https://www.googleapis.com/youtube/v3/playlists?part=snippet,status',
+      {
+        snippet: { title: name, description: 'Transferred via trackbridge' },
+        status:  { privacyStatus: isPublic ? 'public' : 'private' },
+      },
+      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+    );
+    quota.spend(quota.COSTS.playlistsInsert);
+    return data.id;
+  } catch (err) {
+    console.error('❌ YouTube createPlaylist failed');
+    console.error('Status:', err.response?.status);
+    console.error('Full error body:', JSON.stringify(err.response?.data));
+    console.error('Token (first 15 chars):', accessToken?.slice(0, 15));
+    throw err;
+  }
 }
 
 async function addVideoToYouTube(playlistId, videoId, accessToken) {
@@ -154,6 +162,139 @@ async function addVideoToYouTube(playlistId, videoId, accessToken) {
 function sendSSE(res, event) {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/transfer/scan  — search-only pre-check, no writes
+// ─────────────────────────────────────────────────────────────
+
+router.post('/scan', async (req, res) => {
+  const { from, to, tracks, options } = req.body;
+
+  if (!from || !to || !tracks?.length) {
+    return res.status(400).json({ error: 'from, to, tracks required' });
+  }
+
+  const jobId = nanoid();
+
+  jobs.set(jobId, {
+    jobId,
+    kind: 'scan',
+    from,
+    to,
+    tracks,
+    options: options || {},
+    status:   'queued',
+    progress: 0,
+    result:   null,
+  });
+
+  res.json({ jobId });
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/transfer/scan-stream/:jobId  (SSE) — search every track,
+// report a per-track match result, but never create a playlist or
+// write anything to either platform.
+// ─────────────────────────────────────────────────────────────
+
+router.get('/scan-stream/:jobId', async (req, res) => {
+  const job = jobs.get(req.params.jobId);
+  if (!job || job.kind !== 'scan') return res.status(404).json({ error: 'Scan job not found' });
+
+  res.setHeader('Content-Type',      'text/event-stream');
+  res.setHeader('Cache-Control',     'no-cache');
+  res.setHeader('Connection',        'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 20_000);
+  req.on('close', () => clearInterval(heartbeat));
+
+  job.status = 'running';
+  const { from, to, tracks, options } = job;
+
+  try {
+    if (from === 'spotify' || to === 'spotify') {
+      const ok = await refreshSpotifyIfNeeded(req.session);
+      if (!ok) { sendSSE(res, { type: 'error', error: 'Spotify not connected' }); return res.end(); }
+    }
+    if (from === 'youtube' || to === 'youtube') {
+      const ok = await refreshYouTubeIfNeeded(req.session);
+      if (!ok) { sendSSE(res, { type: 'error', error: 'YouTube not connected' }); return res.end(); }
+    }
+
+    const spToken = req.session.spotify?.accessToken;
+    const ytToken = req.session.youtube?.accessToken;
+
+    if (to === 'youtube' || from === 'youtube') {
+      sendSSE(res, { type: 'quota_info', quotaStats: quota.getStats() });
+    }
+
+    const total = tracks.length;
+    let matched = 0, fuzzy = 0, missed = 0;
+
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
+      let match = null;
+
+      try {
+        if (to === 'spotify') {
+          match = await searchSpotifyTrack(track.name, track.artist, spToken, options?.exactMatchOnly ?? true);
+          await sleep(80);
+        } else {
+          if (!quota.canAfford(quota.COSTS.searchList)) {
+            sendSSE(res, {
+              type: 'quota_stop',
+              done: i,
+              total,
+              remaining: quota.remaining(),
+              message: `Quota limit reached after scanning ${i} tracks.`,
+            });
+            break;
+          }
+          match = await searchYouTubeTrack(track.name, track.artist, ytToken);
+          await sleep(150);
+        }
+      } catch (e) {
+        console.error(`❌ Scan search error for "${track.name}":`, e.response?.data || e.message);
+      }
+
+      const matchStatus = match ? match.matchStatus : 'miss';
+      if (matchStatus === 'found') matched++;
+      else if (matchStatus === 'fuzzy') fuzzy++;
+      else missed++;
+
+      sendSSE(res, {
+        type:        'track_scanned',
+        done:         i + 1,
+        total,
+        trackId:     track.id,
+        trackName:   track.name,
+        matchStatus,
+        matched, fuzzy, missed,
+        quotaLeft:   to === 'youtube' ? quota.remaining() : null,
+      });
+
+      job.progress = Math.round(((i + 1) / total) * 100);
+    }
+
+    job.status = 'done';
+    job.result = { matched, fuzzy, missed, total };
+
+    sendSSE(res, { type: 'scan_complete', matched, fuzzy, missed, total });
+
+  } catch (err) {
+    console.error('❌ Scan error');
+    console.error('Status:', err.response?.status);
+    console.error('Response data:', JSON.stringify(err.response?.data));
+    console.error('Stack:', err.stack);
+    job.status = 'error';
+    sendSSE(res, { type: 'error', error: err.response?.data?.error?.message || err.message });
+  } finally {
+    clearInterval(heartbeat);
+    res.end();
+  }
+});
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/transfer/start
@@ -357,9 +498,14 @@ router.get('/stream/:jobId', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Transfer error:', err.response?.data || err.message);
+    console.error('❌ Transfer error');
+    console.error('Status:', err.response?.status);
+    console.error('Response data:', JSON.stringify(err.response?.data));
+    console.error('Message:', err.message);
+    console.error('Stack:', err.stack);
     job.status = 'error';
-    sendSSE(res, { type: 'error', error: err.message });
+    const userMessage = err.response?.data?.error?.message || err.message;
+    sendSSE(res, { type: 'error', error: userMessage });
   } finally {
     clearInterval(heartbeat);
     res.end();

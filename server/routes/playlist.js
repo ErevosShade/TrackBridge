@@ -1,533 +1,281 @@
 const express = require('express');
-const axios   = require('axios');
-const { nanoid } = require('nanoid');
+const axios = require('axios');
 const { refreshSpotifyIfNeeded, refreshYouTubeIfNeeded } = require('../middleware/requireAuth');
-const quota  = require('../utils/quotaGuard');
-const cache  = require('../utils/searchCache');
+const quota = require('../utils/quotaGuard');
 const router = express.Router();
 
-// In-memory job store (swap for Redis in production)
-const jobs = new Map();
+// ── Detect platform from URL ──────────────────────────────────
 
-// ── Delay helper ──────────────────────────────────────────────
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// ─────────────────────────────────────────────────────────────
-// SPOTIFY helpers  (no quota cost — Spotify has no hard unit limit)
-// ─────────────────────────────────────────────────────────────
-
-async function searchSpotifyTrack(name, artist, accessToken, exactOnly) {
-  // Check cache first
-  const cached = cache.get('spotify', name, artist);
-  if (cached !== null) return cached;
-
-  const q = exactOnly
-    ? `track:"${name}" artist:"${artist}"`
-    : `${name} ${artist}`;
-
-  const { data } = await axios.get('https://api.spotify.com/v1/search', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    params:  { q, type: 'track', limit: 1 },
-  });
-
-  const item = data.tracks?.items?.[0];
-  if (!item) { cache.set('spotify', name, artist, null); return null; }
-
-  const nameLower   = name.toLowerCase();
-  const resultName  = item.name.toLowerCase();
-  const exact       = resultName === nameLower || resultName.includes(nameLower);
-  const result      = { id: item.uri, matchStatus: exact ? 'found' : 'fuzzy' };
-
-  cache.set('spotify', name, artist, result);
-  return result;
+function detectPlatform(url) {
+  if (/open\.spotify\.com\/playlist/.test(url)) return 'spotify';
+  if (/youtube\.com\/playlist|youtu\.be/.test(url)) return 'youtube';
+  return null;
 }
 
-async function createSpotifyPlaylist(name, isPublic, accessToken) {
-  const { data: me } = await axios.get('https://api.spotify.com/v1/me', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  const { data } = await axios.post(
-    `https://api.spotify.com/v1/users/${me.id}/playlists`,
-    { name, public: isPublic, description: 'Transferred via trackbridge' },
-    { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
-  );
-  return data.id;
+function extractSpotifyId(url) {
+  const match = url.match(/playlist\/([A-Za-z0-9]+)/);
+  return match?.[1] || null;
 }
 
-async function addTracksToSpotify(playlistId, uris, accessToken) {
-  // Spotify max 100 per request — batch it
-  for (let i = 0; i < uris.length; i += 100) {
-    const chunk = uris.slice(i, i + 100);
-    await axios.post(
-      `https://api.spotify.com/v1/playlists/${playlistId}/tracks`,
-      { uris: chunk },
-      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
-    );
-    await sleep(200); // gentle pacing
-  }
+function extractYouTubeId(url) {
+  const match = url.match(/[?&]list=([^&]+)/);
+  return match?.[1] || null;
 }
 
-// ─────────────────────────────────────────────────────────────
-// YOUTUBE helpers  (every call tracked against quota)
-// ─────────────────────────────────────────────────────────────
+// ── Spotify fetcher ───────────────────────────────────────────
 
-/**
- * Smart YouTube track search.
- *
- * Strategy (cheapest first):
- *   1. Cache hit          →   0 units
- *   2. videos.list lookup →   1 unit  (only works if we already have a videoId)
- *   3. search.list        → 100 units (last resort)
- *
- * For Spotify→YouTube transfers, we always go to step 3 since we only
- * have track names. We add a 350ms delay between searches so we never
- * burst more than ~3 calls/sec.
- */
-async function searchYouTubeTrack(name, artist, accessToken) {
-  // 1. Cache
-  const cached = cache.get('youtube', name, artist);
-  if (cached !== null) return cached;
-
-  // 2. Quota check — search.list costs 100 units
-  if (!quota.canAfford(quota.COSTS.searchList)) {
-    console.warn(`[quota] Not enough units for search: "${name}". Skipping.`);
-    return null;
-  }
-
-  // 3. search.list — most accurate but expensive
-  const { data } = await axios.get('https://www.googleapis.com/youtube/v3/search', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    params:  {
-      part:            'snippet',
-      q:               `${name} ${artist} official audio`,
-      type:            'video',
-      videoCategoryId: '10', // Music
-      maxResults:      1,
-    },
-  });
-
-  quota.spend(quota.COSTS.searchList);
-
-  const item = data.items?.[0];
-  if (!item) { cache.set('youtube', name, artist, null); return null; }
-
-  const result = { id: item.id.videoId, matchStatus: 'found' };
-  cache.set('youtube', name, artist, result);
-  return result;
+function getSpotifyTrackItem(entry) {
+  // New /items endpoint shape: entry.item IS the track/episode object directly
+  // (entry.item.track is a boolean flag meaning "this is a track", not nested data).
+  // Deprecated /tracks endpoint shape: entry.track IS the track object.
+  if (entry.item && typeof entry.item === 'object') return entry.item;
+  if (entry.track && typeof entry.track === 'object') return entry.track;
+  return null;
 }
 
-async function createYouTubePlaylist(name, isPublic, accessToken) {
-  if (!quota.canAfford(quota.COSTS.playlistsInsert)) {
-    throw new Error('YouTube quota exhausted — cannot create playlist');
-  }
+async function fetchSpotifyPlaylist(playlistId, accessToken) {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+  };
+
+  // Get the user's market — Spotify's docs note that without a market or
+  // user-country signal, playlist content can come back as unavailable.
+  let market;
   try {
-    const { data } = await axios.post(
-      'https://www.googleapis.com/youtube/v3/playlists?part=snippet,status',
+    const { data: me } = await axios.get('https://api.spotify.com/v1/me', { headers });
+    market = me.country || undefined;
+    console.log('✅ Spotify user market:', market);
+  } catch (err) {
+    console.warn('⚠️ Could not fetch user market from /v1/me:', err.response?.data || err.message);
+  }
+
+  // Fetch playlist metadata
+  let meta;
+  try {
+    const { data } = await axios.get(
+      `https://api.spotify.com/v1/playlists/${playlistId}`,
       {
-        snippet: { title: name, description: 'Transferred via trackbridge' },
-        status:  { privacyStatus: isPublic ? 'public' : 'private' },
-      },
-      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+        headers,
+        params: {
+          fields: "id,name,owner.id,owner.display_name,images,tracks(total)",
+          ...(market ? { market } : {}),
+        },
+      }
     );
-    quota.spend(quota.COSTS.playlistsInsert);
-    return data.id;
+
+    meta = data;
+    console.log('✅ Spotify metadata response:', JSON.stringify(data));
   } catch (err) {
-    console.error('❌ YouTube createPlaylist failed');
-    console.error('Status:', err.response?.status);
-    console.error('Full error body:', JSON.stringify(err.response?.data));
-    console.error('Token (first 15 chars):', accessToken?.slice(0, 15));
-    throw err;
-  }
-}
+    console.error("❌ Spotify playlist metadata request failed");
+    console.error("Status:", err.response?.status);
+    console.error("URL:", err.config?.url);
+    console.error("Response:", err.response?.data);
 
-async function addVideoToYouTube(playlistId, videoId, accessToken) {
-  if (!quota.canAfford(quota.COSTS.playlistItemsInsert)) {
-    throw new Error('YouTube quota exhausted — cannot add track');
-  }
-  await axios.post(
-    'https://www.googleapis.com/youtube/v3/playlistItems?part=snippet',
-    {
-      snippet: {
-        playlistId,
-        resourceId: { kind: 'youtube#video', videoId },
-      },
-    },
-    { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
-  );
-  quota.spend(quota.COSTS.playlistItemsInsert);
-}
+    const status = err.response?.status;
+    const message = status === 403
+      ? '[metadata call] Spotify returned 403 Forbidden fetching playlist metadata (GET /v1/playlists/{id}). This usually means: the connected Spotify account is not added under "Users and Access" for this app in the Spotify Developer Dashboard, OR the access token is missing a required scope. Check /auth/debug/spotify for token + scope details.'
+      : err.response?.data?.error?.message || err.response?.data?.message || 'Failed to fetch Spotify playlist metadata';
 
-// ── SSE helper ────────────────────────────────────────────────
-
-function sendSSE(res, event) {
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
-}
-
-// ─────────────────────────────────────────────────────────────
-// POST /api/transfer/scan  — search-only pre-check, no writes
-// ─────────────────────────────────────────────────────────────
-
-router.post('/scan', async (req, res) => {
-  const { from, to, tracks, options } = req.body;
-
-  if (!from || !to || !tracks?.length) {
-    return res.status(400).json({ error: 'from, to, tracks required' });
+    const enriched = new Error(message);
+    enriched.response = err.response;
+    throw enriched;
   }
 
-  const jobId = nanoid();
+  const tracks = [];
+  const marketQS = market ? `&market=${encodeURIComponent(market)}` : '';
+  let url = `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=50${marketQS}`;
+  let triedTracksEndpoint = false;
 
-  jobs.set(jobId, {
-    jobId,
-    kind: 'scan',
-    from,
-    to,
-    tracks,
-    options: options || {},
-    status:   'queued',
-    progress: 0,
-    result:   null,
-  });
+  while (url) {
+    try {
+      const { data } = await axios.get(url, { headers });
+      console.log(`✅ Spotify items page response (${url}):`, JSON.stringify(data).slice(0, 2000));
 
-  res.json({ jobId });
-});
+      for (const entry of data.items || []) {
+        const item = getSpotifyTrackItem(entry);
+        if (!item || item.type !== 'track') continue;
 
-// ─────────────────────────────────────────────────────────────
-// GET /api/transfer/scan-stream/:jobId  (SSE) — search every track,
-// report a per-track match result, but never create a playlist or
-// write anything to either platform.
-// ─────────────────────────────────────────────────────────────
-
-router.get('/scan-stream/:jobId', async (req, res) => {
-  const job = jobs.get(req.params.jobId);
-  if (!job || job.kind !== 'scan') return res.status(404).json({ error: 'Scan job not found' });
-
-  res.setHeader('Content-Type',      'text/event-stream');
-  res.setHeader('Cache-Control',     'no-cache');
-  res.setHeader('Connection',        'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
-
-  const heartbeat = setInterval(() => res.write(': ping\n\n'), 20_000);
-  req.on('close', () => clearInterval(heartbeat));
-
-  job.status = 'running';
-  const { from, to, tracks, options } = job;
-
-  try {
-    if (from === 'spotify' || to === 'spotify') {
-      const ok = await refreshSpotifyIfNeeded(req.session);
-      if (!ok) { sendSSE(res, { type: 'error', error: 'Spotify not connected' }); return res.end(); }
-    }
-    if (from === 'youtube' || to === 'youtube') {
-      const ok = await refreshYouTubeIfNeeded(req.session);
-      if (!ok) { sendSSE(res, { type: 'error', error: 'YouTube not connected' }); return res.end(); }
-    }
-
-    const spToken = req.session.spotify?.accessToken;
-    const ytToken = req.session.youtube?.accessToken;
-
-    if (to === 'youtube' || from === 'youtube') {
-      sendSSE(res, { type: 'quota_info', quotaStats: quota.getStats() });
-    }
-
-    const total = tracks.length;
-    let matched = 0, fuzzy = 0, missed = 0;
-
-    for (let i = 0; i < tracks.length; i++) {
-      const track = tracks[i];
-      let match = null;
-
-      try {
-        if (to === 'spotify') {
-          match = await searchSpotifyTrack(track.name, track.artist, spToken, options?.exactMatchOnly ?? true);
-          await sleep(80);
-        } else {
-          if (!quota.canAfford(quota.COSTS.searchList)) {
-            sendSSE(res, {
-              type: 'quota_stop',
-              done: i,
-              total,
-              remaining: quota.remaining(),
-              message: `Quota limit reached after scanning ${i} tracks.`,
-            });
-            break;
-          }
-          match = await searchYouTubeTrack(track.name, track.artist, ytToken);
-          await sleep(150);
-        }
-      } catch (e) {
-        console.error(`❌ Scan search error for "${track.name}":`, e.response?.data || e.message);
+        tracks.push({
+          id: item.id,
+          name: item.name,
+          artist: item.artists.map((a) => a.name).join(", "),
+          album: item.album?.name || "",
+          duration_ms: item.duration_ms,
+          thumbnail: item.album?.images?.[2]?.url || null,
+        });
       }
 
-      const matchStatus = match ? match.matchStatus : 'miss';
-      if (matchStatus === 'found') matched++;
-      else if (matchStatus === 'fuzzy') fuzzy++;
-      else missed++;
+      url = data.next;
+    } catch (err) {
+      const status = err.response?.status;
+      const urlFailed = url;
+      if (!triedTracksEndpoint && status === 403) {
+        console.warn('⚠️ Spotify /items endpoint forbidden; retrying deprecated /tracks endpoint');
+        url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?limit=50${marketQS}`;
+        triedTracksEndpoint = true;
+        continue;
+      }
 
-      sendSSE(res, {
-        type:        'track_scanned',
-        done:         i + 1,
-        total,
-        trackId:     track.id,
-        trackName:   track.name,
-        matchStatus,
-        matched, fuzzy, missed,
-        quotaLeft:   to === 'youtube' ? quota.remaining() : null,
-      });
+      console.error("❌ Spotify playlist tracks request failed");
+      console.error("Status:", status);
+      console.error("URL:", urlFailed);
+      console.error("Response:", err.response?.data);
 
-      job.progress = Math.round(((i + 1) / total) * 100);
+      const message = status === 403
+        ? '[items call] Spotify returned 403 Forbidden. Common causes: (1) this Spotify account is not added under "Users and Access" for the app in the Spotify Developer Dashboard (Development Mode apps require every tester to be explicitly allowlisted), (2) the connected token is missing a required scope, or (3) the playlist is not owned by / shared with the connected account. Check /auth/debug/spotify for token + scope details.'
+        : status === 404
+        ? 'Spotify playlist not found.'
+        : err.response?.data?.error?.message || err.response?.data?.message || 'Failed to fetch Spotify playlist tracks';
+
+      const enriched = new Error(message);
+      enriched.response = err.response;
+      throw enriched;
     }
+  }
 
-    job.status = 'done';
-    job.result = { matched, fuzzy, missed, total };
+  return {
+    id: meta.id,
+    name: meta.name,
+    owner: meta.owner?.display_name || meta.owner?.id || 'Spotify',
+    thumbnail: meta.images?.[0]?.url || null,
+    images: meta.images,
+    trackCount: meta.tracks?.total ?? tracks.length,
+    sourcePlatform: 'spotify',
+    tracks,
+  };
+}
 
-    sendSSE(res, { type: 'scan_complete', matched, fuzzy, missed, total });
+// ── YouTube fetcher ───────────────────────────────────────────
 
+async function fetchYouTubePlaylist(playlistId, accessToken) {
+  const headers = { Authorization: `Bearer ${accessToken}` };
+
+  let meta;
+  try {
+    const { data } = await axios.get(
+      'https://www.googleapis.com/youtube/v3/playlists',
+      {
+        headers,
+        params: { part: 'snippet', id: playlistId, maxResults: 1 },
+      }
+    );
+    meta = data;
+    quota.spend(quota.COSTS.playlistsList);
   } catch (err) {
-    console.error('❌ Scan error');
+    console.error('❌ YouTube playlist metadata request failed');
     console.error('Status:', err.response?.status);
-    console.error('Response data:', JSON.stringify(err.response?.data));
+    console.error('Response:', err.response?.data);
     console.error('Stack:', err.stack);
-    job.status = 'error';
-    sendSSE(res, { type: 'error', error: err.response?.data?.error?.message || err.message });
-  } finally {
-    clearInterval(heartbeat);
-    res.end();
-  }
-});
 
-// ─────────────────────────────────────────────────────────────
-// POST /api/transfer/start
-// ─────────────────────────────────────────────────────────────
-
-router.post('/start', async (req, res) => {
-  const { from, to, tracks, playlistName, options, recipientEmail } = req.body;
-
-  if (!from || !to || !tracks?.length) {
-    return res.status(400).json({ error: 'from, to, tracks required' });
+    const message = err.response?.data?.error?.message || 'Failed to fetch YouTube playlist metadata';
+    const enriched = new Error(message);
+    enriched.response = err.response;
+    throw enriched;
   }
 
-  // Pre-flight quota check for YouTube destinations
-  if (to === 'youtube') {
-    // Worst case: 1 playlist create (50) + N searches (100 each) + N inserts (50 each)
-    const worstCase = quota.COSTS.playlistsInsert
-      + tracks.length * (quota.COSTS.searchList + quota.COSTS.playlistItemsInsert);
+  const playlist = meta.items?.[0];
+  if (!playlist) throw new Error('Playlist not found');
 
-    const stats = quota.getStats();
+  const tracks = [];
+  let pageToken = null;
 
-    if (stats.remaining < quota.COSTS.playlistsInsert) {
-      return res.status(429).json({
-        error: 'YouTube API quota exhausted for today. Resets at midnight Pacific time.',
-        quotaStats: stats,
+  do {
+    const params = {
+      part: 'snippet',
+      playlistId,
+      maxResults: 50,
+      ...(pageToken ? { pageToken } : {}),
+    };
+
+    let data;
+    try {
+      const res = await axios.get(
+        'https://www.googleapis.com/youtube/v3/playlistItems',
+        { headers, params }
+      );
+      data = res.data;
+      quota.spend(quota.COSTS.playlistItemsList);
+    } catch (err) {
+      console.error('❌ YouTube playlistItems request failed');
+      console.error('Status:', err.response?.status);
+      console.error('Response:', err.response?.data);
+      console.error('Stack:', err.stack);
+
+      const message = err.response?.data?.error?.message || 'Failed to fetch YouTube playlist items';
+      const enriched = new Error(message);
+      enriched.response = err.response;
+      throw enriched;
+    }
+
+    for (const item of data.items || []) {
+      const s = item.snippet;
+      if (s.title === 'Deleted video' || s.title === 'Private video') continue;
+      tracks.push({
+        id: s.resourceId.videoId,
+        name: s.title,
+        artist: s.videoOwnerChannelTitle || '',
+        album: '',
+        duration_ms: 0,
+        thumbnail: s.thumbnails?.default?.url || null,
       });
     }
 
-    // Warn if we can only partially complete
-    const maxTracks = Math.floor(
-      (stats.remaining - quota.COSTS.playlistsInsert) /
-      (quota.COSTS.searchList + quota.COSTS.playlistItemsInsert)
-    );
+    pageToken = data.nextPageToken || null;
+  } while (pageToken);
 
-    if (maxTracks < tracks.length) {
-      console.warn(`[quota] Can only transfer ${maxTracks}/${tracks.length} tracks today`);
-    }
-  }
-
-  const jobId      = nanoid();
-  const shareToken = nanoid(12);
-
-  jobs.set(jobId, {
-    jobId,
-    from,
-    to,
+  return {
+    id: playlistId,
+    name: playlist.snippet.title,
+    owner: playlist.snippet.channelTitle,
+    thumbnail: playlist.snippet.thumbnails?.high?.url || null,
+    trackCount: tracks.length,
+    sourcePlatform: 'youtube',
     tracks,
-    playlistName: playlistName || 'Transferred Playlist',
-    options:      options || {},
-    recipientEmail: recipientEmail || null,
-    shareToken,
-    status:   'queued',
-    progress: 0,
-    result:   null,
-  });
+  };
+}
 
-  res.json({ jobId, shareToken });
-});
+// ── Route: GET /api/playlist?url=… ───────────────────────────
 
-// ─────────────────────────────────────────────────────────────
-// GET /api/transfer/stream/:jobId  (SSE)
-// ─────────────────────────────────────────────────────────────
+router.get('/', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: 'url query param required' });
 
-router.get('/stream/:jobId', async (req, res) => {
-  const job = jobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
-
-  // SSE headers
-  res.setHeader('Content-Type',      'text/event-stream');
-  res.setHeader('Cache-Control',     'no-cache');
-  res.setHeader('Connection',        'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
-
-  const heartbeat = setInterval(() => res.write(': ping\n\n'), 20_000);
-  req.on('close', () => clearInterval(heartbeat));
-
-  job.status = 'running';
-  const { from, to, tracks, playlistName, options } = job;
+  const platform = detectPlatform(url);
+  if (!platform) return res.status(400).json({ error: 'Unrecognised playlist URL' });
 
   try {
-    // Refresh tokens
-    if (from === 'spotify' || to === 'spotify') {
+    if (platform === 'spotify') {
       const ok = await refreshSpotifyIfNeeded(req.session);
-      if (!ok) { sendSSE(res, { type: 'error', error: 'Spotify not connected' }); return res.end(); }
+      if (!ok) return res.status(401).json({ error: 'Spotify not connected', platform });
+
+      const id = extractSpotifyId(url);
+      if (!id) return res.status(400).json({ error: 'Could not parse Spotify playlist ID' });
+
+      const playlist = await fetchSpotifyPlaylist(id, req.session.spotify.accessToken);
+      return res.json(playlist);
     }
-    if (from === 'youtube' || to === 'youtube') {
+
+    if (platform === 'youtube') {
       const ok = await refreshYouTubeIfNeeded(req.session);
-      if (!ok) { sendSSE(res, { type: 'error', error: 'YouTube not connected' }); return res.end(); }
+      if (!ok) return res.status(401).json({ error: 'YouTube not connected', platform });
+
+      const id = extractYouTubeId(url);
+      if (!id) return res.status(400).json({ error: 'Could not parse YouTube playlist ID' });
+
+      const playlist = await fetchYouTubePlaylist(id, req.session.youtube.accessToken);
+      return res.json(playlist);
     }
-
-    const spToken = req.session.spotify?.accessToken;
-    const ytToken = req.session.youtube?.accessToken;
-
-    // Send initial quota snapshot to client
-    if (to === 'youtube' || from === 'youtube') {
-      sendSSE(res, { type: 'quota_info', quotaStats: quota.getStats() });
-    }
-
-    // Create destination playlist
-    let destPlaylistId;
-    if (to === 'spotify') {
-      destPlaylistId = await createSpotifyPlaylist(playlistName, options.makePublic, spToken);
-    } else {
-      destPlaylistId = await createYouTubePlaylist(playlistName, options.makePublic, ytToken);
-    }
-
-    const matchedUris = [];
-    const total       = tracks.length;
-    let   quotaStopped = false;
-
-    for (let i = 0; i < tracks.length; i++) {
-      const track = tracks[i];
-      let   match = null;
-
-      try {
-        if (to === 'spotify') {
-          match = await searchSpotifyTrack(track.name, track.artist, spToken, options.exactMatchOnly);
-          await sleep(100); // gentle Spotify pacing
-        } else {
-          // Check quota before each YouTube search
-          if (!quota.canAfford(quota.COSTS.searchList)) {
-            quotaStopped = true;
-            sendSSE(res, {
-              type:       'quota_stop',
-              done:        i,
-              total,
-              remaining:   quota.remaining(),
-              message:    `Quota limit reached after ${i} tracks. Transfer paused — resumes tomorrow.`,
-            });
-            break;
-          }
-
-          match = await searchYouTubeTrack(track.name, track.artist, ytToken);
-          // 350ms between YouTube searches → ~2.8 searches/sec max
-          await sleep(350);
-        }
-      } catch (e) {
-        console.error(`Track search error for "${track.name}":`, e.message);
-      }
-
-      if (match) {
-        matchedUris.push(match.id);
-
-        if (to === 'youtube') {
-          try {
-            await addVideoToYouTube(destPlaylistId, match.id, ytToken);
-            await sleep(200); // pacing between inserts
-          } catch (e) {
-            if (e.message.includes('quota')) {
-              quotaStopped = true;
-              sendSSE(res, {
-                type:      'quota_stop',
-                done:       i + 1,
-                total,
-                remaining:  quota.remaining(),
-                message:   `Quota exhausted adding track. ${i + 1} tracks transferred.`,
-              });
-              break;
-            }
-          }
-        }
-
-        sendSSE(res, {
-          type:        'track_done',
-          done:         i + 1,
-          total,
-          trackName:   track.name,
-          matchStatus: match.matchStatus,
-          quotaLeft:   to === 'youtube' ? quota.remaining() : null,
-        });
-      } else {
-        sendSSE(res, {
-          type:      'track_miss',
-          done:       i + 1,
-          total,
-          trackName: track.name,
-          quotaLeft: to === 'youtube' ? quota.remaining() : null,
-        });
-      }
-
-      job.progress = Math.round(((i + 1) / total) * 100);
-    }
-
-    // Batch-add for Spotify (YouTube adds one-by-one above)
-    if (to === 'spotify' && matchedUris.length) {
-      await addTracksToSpotify(destPlaylistId, matchedUris, spToken);
-    }
-
-    job.status = 'done';
-    job.result = { destPlaylistId, matched: matchedUris.length, total };
-
-    sendSSE(res, {
-      type:          'complete',
-      matched:        matchedUris.length,
-      missed:         total - matchedUris.length,
-      total,
-      quotaStopped,
-      destPlaylistId,
-      shareToken:    job.shareToken,
-      quotaStats:    quota.getStats(),
-    });
-
   } catch (err) {
-    console.error('❌ Transfer error');
-    console.error('Status:', err.response?.status);
-    console.error('Response data:', JSON.stringify(err.response?.data));
+    console.error('❌ Playlist fetch error');
     console.error('Message:', err.message);
+    console.error('Status:', err.response?.status);
+    console.error('Response data:', err.response?.data);
     console.error('Stack:', err.stack);
-    job.status = 'error';
-    const userMessage = err.response?.data?.error?.message || err.message;
-    sendSSE(res, { type: 'error', error: userMessage });
-  } finally {
-    clearInterval(heartbeat);
-    res.end();
+
+    const status = err.response?.status || 500;
+    const message = err.response?.data?.error?.message || err.response?.data?.message || err.message || 'Failed to fetch playlist';
+    res.status(status).json({ error: message, details: err.response?.data });
   }
-});
-
-// ─────────────────────────────────────────────────────────────
-// GET /api/transfer/status/:jobId
-// ─────────────────────────────────────────────────────────────
-
-router.get('/status/:jobId', (req, res) => {
-  const job = jobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'Not found' });
-  res.json({ status: job.status, progress: job.progress, result: job.result });
-});
-
-// ─────────────────────────────────────────────────────────────
-// GET /api/transfer/quota  — check remaining quota anytime
-// ─────────────────────────────────────────────────────────────
-
-router.get('/quota', (_req, res) => {
-  res.json(quota.getStats());
 });
 
 module.exports = router;
